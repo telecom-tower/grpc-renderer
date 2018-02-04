@@ -1,3 +1,20 @@
+// Copyright 2018 Jacques Supcik / HEIA-FR
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// This package implements the link between a gRPC server and a ws281x "neopixel"
+// device. It is a part of the telecom tower project
+
 //go:generate protoc -I towerapi/v1 towerapi/v1/telecomtower.proto --go_out=plugins=grpc:towerapi/v1
 
 package renderer
