@@ -2,11 +2,13 @@ package renderer
 
 import (
 	"image"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
 
 func (tower *TowerRenderer) renderLed(ls *layersSet) error {
+	t0 := time.Now()
 	result := image.NewRGBA(image.Rect(0, 0, displayWidth, displayHeight))
 	for _, layer := range ls.layers {
 		for x := 0; x < displayWidth; x++ {
@@ -29,17 +31,21 @@ func (tower *TowerRenderer) renderLed(ls *layersSet) error {
 			leds[index] = c
 		}
 	}
+	log.Debugf("Rendering time: %f µs", time.Now().Sub(t0).Seconds()*1e6)
 	return tower.ws.Render()
 }
 
 func (tower *TowerRenderer) loop() chan *layersSet {
 	log.Debug("Starting tower loop")
 	c := make(chan *layersSet)
+	roll := make(chan struct{})
 	go func() {
 		var currentSet *layersSet
 		for {
 			select {
 			case currentSet = <-c:
+				_ = tower.renderLed(currentSet)
+			case <-roll:
 				_ = tower.renderLed(currentSet)
 			}
 		}
