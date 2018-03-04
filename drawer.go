@@ -21,7 +21,6 @@ package renderer
 
 import (
 	"image"
-	"image/color"
 	"io"
 
 	"github.com/pkg/errors"
@@ -34,11 +33,13 @@ func (tower *TowerRenderer) fill(fill *pb.Fill) error {
 	log.Debugf("fill")
 	tower.activeLayers[fill.Layer] = true
 	layer := tower.layers[fill.Layer]
+	layer.dirty = true
+	canvas := layer.image
 	c := pbColorToColor(fill.Color)
-	bounds := layer.Bounds()
+	bounds := canvas.Bounds()
 	for x := bounds.Min.X; x < bounds.Max.X; x++ {
 		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-			paint(layer, x, y, c, int(fill.PaintMode))
+			paint(canvas, x, y, c, int(fill.PaintMode))
 		}
 	}
 	return nil
@@ -48,12 +49,8 @@ func (tower *TowerRenderer) clear(clear *pb.Clear) error {
 	log.Debugf("clear")
 	for _, l := range clear.Layer {
 		layer := tower.layers[l]
-		bounds := layer.Bounds()
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-				layer.Set(x, y, color.Transparent)
-			}
-		}
+		layer.image = image.NewRGBA(image.Rect(0, 0, 0, 0))
+		layer.dirty = true
 		tower.activeLayers[l] = false
 	}
 	return nil
@@ -63,17 +60,18 @@ func (tower *TowerRenderer) setPixels(pixels *pb.SetPixels) error {
 	log.Debugf("set pixels")
 	tower.activeLayers[pixels.Layer] = true
 	layer := tower.layers[pixels.Layer]
+	canvas := layer.image
 	for _, pix := range pixels.Pixels {
 		point := image.Point{
 			X: int(pix.Point.X),
 			Y: int(pix.Point.Y),
 		}
-		layer = resizeImage(
-			layer,
+		canvas = resizeImage(
+			canvas,
 			image.Rect(point.X, point.Y, point.X+1, point.Y+1))
-		paint(layer, point.X, point.Y, pbColorToColor(pix.Color), int(pixels.PaintMode))
+		paint(canvas, point.X, point.Y, pbColorToColor(pix.Color), int(pixels.PaintMode))
 	}
-	tower.layers[pixels.Layer] = layer
+	tower.layers[pixels.Layer].image = canvas
 	return nil
 }
 
@@ -81,15 +79,17 @@ func (tower *TowerRenderer) drawRectangle(rect *pb.DrawRectangle) error {
 	log.Debug("draw rectangle")
 	tower.activeLayers[rect.Layer] = true
 	layer := tower.layers[rect.Layer]
+	layer.dirty = true
+	canvas := layer.image
 	c := pbColorToColor(rect.Color)
 	r := image.Rect(int(rect.Min.X), int(rect.Min.Y), int(rect.Max.X), int(rect.Max.Y))
-	layer = resizeImage(layer, r)
+	canvas = resizeImage(canvas, r)
 	for x := r.Min.X; x < r.Max.X; x++ {
 		for y := r.Min.Y; y < r.Max.Y; y++ {
-			paint(layer, x, y, c, int(rect.PaintMode))
+			paint(canvas, x, y, c, int(rect.PaintMode))
 		}
 	}
-	tower.layers[rect.Layer] = layer
+	tower.layers[rect.Layer].image = canvas
 	return nil
 }
 
@@ -103,14 +103,17 @@ func (tower *TowerRenderer) drawBitmap(bitmap *pb.DrawBitmap) error {
 	)
 	tower.activeLayers[bitmap.Layer] = true
 	layer := tower.layers[bitmap.Layer]
-	resizeImage(layer, bounds)
+	layer.dirty = true
+	canvas := layer.image
+	canvas = resizeImage(canvas, bounds)
 	i := 0
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			paint(layer, x, y, pbColorToColor(bitmap.Colors[i]), int(bitmap.PaintMode))
+			paint(canvas, x, y, pbColorToColor(bitmap.Colors[i]), int(bitmap.PaintMode))
 			i++
 		}
 	}
+	tower.layers[bitmap.Layer].image = canvas
 	return nil
 }
 
@@ -118,6 +121,8 @@ func (tower *TowerRenderer) writeText(wt *pb.WriteText) error {
 	log.Debug("write text")
 	tower.activeLayers[wt.Layer] = true
 	layer := tower.layers[wt.Layer]
+	layer.dirty = true
+	canvas := layer.image
 	var fnt font.Font
 	var rect image.Rectangle
 
@@ -136,62 +141,65 @@ func (tower *TowerRenderer) writeText(wt *pb.WriteText) error {
 		return errors.New("Unknown font")
 	}
 
-	layer = resizeImage(layer, rect)
+	canvas = resizeImage(canvas, rect)
 	c := pbColorToColor(wt.Color)
 	x := int(wt.X)
 	for _, r := range msg {
 		for _, glyph := range fnt.Bitmap[r] {
 			for y := 0; y < 8; y++ {
 				if uint(glyph)&(1<<uint(y)) != 0 {
-					paint(layer, x, y, c, int(wt.PaintMode))
+					paint(canvas, x, y, c, int(wt.PaintMode))
 				}
 			}
 			x++
 		}
 	}
-	tower.layers[wt.Layer] = layer
+	tower.layers[wt.Layer].image = canvas
 	return nil
 }
 
-func (tower *TowerRenderer) hScroll(*pb.HScroll) error {
-	log.Debug("horizontal scroll (NYI)")
-	// TODO: Not yet implemented
+func (tower *TowerRenderer) setLayerOrigin(origin *pb.SetLayerOrigin) error {
+	log.Debug("Set Layer Origin")
+	tower.activeLayers[origin.Layer] = true
+	layer := tower.layers[origin.Layer]
+	layer.dirty = true
+	layer.origin = image.Point{X: int(origin.Position.X), Y: int(origin.Position.Y)}
+	layer.image = resizeImage(
+		layer.image,
+		image.Rect(
+			layer.origin.X,
+			layer.origin.Y,
+			layer.origin.X+displayWidth,
+			layer.origin.Y+displayHeight))
 	return nil
 }
 
-func (tower *TowerRenderer) vScroll(*pb.VScroll) error {
-	log.Debug("vertical scroll (NYI)")
-	// TODO: Not yet implemented
+func (tower *TowerRenderer) setLayerAlpha(alpha *pb.SetLayerAlpha) error {
+	log.Debug("Set Layer Alpha")
+	tower.activeLayers[alpha.Layer] = true
+	layer := tower.layers[alpha.Layer]
+	layer.dirty = true
+	layer.alpha = int(alpha.Alpha)
 	return nil
 }
 
-func (tower *TowerRenderer) setLayerAlpha(*pb.SetLayerAlpha) error {
-	log.Debug("Set Layer Alpha (NYI)")
-	// TODO: Not yet implemented
-	return nil
-}
-
-func (tower *TowerRenderer) roll(*pb.Roll) error {
-	log.Debug("Roll (NYI)")
-	// TODO: Not yet implemented
-	return nil
-}
-
-func (tower *TowerRenderer) effect(*pb.Effect) error {
-	log.Debug("Effect (NYI)")
-	// TODO: Not yet implemented
-	return nil
-}
-
-func (tower *TowerRenderer) animate(*pb.Animate) error {
-	log.Debug("Animate (NYI)")
-	// TODO: Not yet implemented
+func (tower *TowerRenderer) autoRoll(autoroll *pb.AutoRoll) error {
+	log.Debugf("AutoRoll (%v)", autoroll.Mode)
+	tower.activeLayers[autoroll.Layer] = true
+	layer := tower.layers[autoroll.Layer]
+	layer.dirty = true
+	layer.rolling.mode = int(autoroll.Mode)
+	layer.rolling.entry = int(autoroll.Entry)
+	layer.rolling.separator = int(autoroll.Separator)
 	return nil
 }
 
 // Draw implements the main task of the server, namely drawing on the display
 func (tower *TowerRenderer) Draw(stream pb.TowerDisplay_DrawServer) error { // nolint: gocyclo
 	var status error
+	for i := 0; i < maxLayers; i++ {
+		tower.layers[i].dirty = false
+	}
 	for {
 		in, err := stream.Recv()
 		if err == io.EOF {
@@ -224,18 +232,12 @@ func (tower *TowerRenderer) Draw(stream pb.TowerDisplay_DrawServer) error { // n
 				status = tower.drawBitmap(t.DrawBitmap)
 			case *pb.DrawRequest_WriteText:
 				status = tower.writeText(t.WriteText)
-			case *pb.DrawRequest_HScroll:
-				status = tower.hScroll(t.HScroll)
-			case *pb.DrawRequest_VScroll:
-				status = tower.vScroll(t.VScroll)
+			case *pb.DrawRequest_SetLayerOrigin:
+				status = tower.setLayerOrigin(t.SetLayerOrigin)
 			case *pb.DrawRequest_SetLayerAlpha:
 				status = tower.setLayerAlpha(t.SetLayerAlpha)
-			case *pb.DrawRequest_Roll:
-				status = tower.roll(t.Roll)
-			case *pb.DrawRequest_Effect:
-				status = tower.effect(t.Effect)
-			case *pb.DrawRequest_Animate:
-				status = tower.animate(t.Animate)
+			case *pb.DrawRequest_AutoRoll:
+				status = tower.autoRoll(t.AutoRoll)
 			}
 		}
 	}

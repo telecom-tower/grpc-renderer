@@ -24,6 +24,8 @@ import (
 	"image/color"
 	"net"
 
+	"github.com/telecom-tower/sdk"
+
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	pb "github.com/telecom-tower/towerapi/v1"
@@ -45,17 +47,30 @@ type WsEngine interface {
 	Leds(channel int) []uint32
 }
 
+type rolling struct {
+	mode      int
+	entry     int
+	separator int
+	last      int
+}
+
+type layer struct {
+	image   *image.RGBA
+	origin  image.Point
+	alpha   int
+	id      int // the id of a layer is also its zIndex
+	dirty   bool
+	rolling rolling
+}
+
+type layersSet []*layer
+
 // TowerRenderer is the base type for rendering
 type TowerRenderer struct {
 	ws           WsEngine
-	layers       []*image.RGBA
+	layers       layersSet
 	activeLayers []bool
-	lsc          chan *layersSet
-}
-
-type layersSet struct {
-	bounds image.Rectangle
-	layers []*image.RGBA
+	lsc          chan layersSet
 }
 
 func combineOver(bg color.Color, fg color.Color) color.Color {
@@ -74,10 +89,14 @@ func combineOver(bg color.Color, fg color.Color) color.Color {
 
 // NewRenderer returns a new TowerRenderer instance
 func NewRenderer(ws WsEngine) *TowerRenderer {
-	layers := make([]*image.RGBA, maxLayers)
+	layers := make([]*layer, maxLayers)
 	activeLayers := make([]bool, maxLayers)
 	for i := 0; i < len(layers); i++ {
-		layers[i] = image.NewRGBA(image.Rect(0, 0, displayWidth, displayHeight))
+		layers[i] = &layer{
+			image:  image.NewRGBA(image.Rect(0, 0, 0, 0)),
+			origin: image.Point{0, 0},
+			alpha:  0xffff,
+		}
 		activeLayers[i] = false
 	}
 	return &TowerRenderer{
@@ -119,35 +138,87 @@ func paint(img *image.RGBA, x int, y int, c color.Color, mode int) {
 	}
 }
 
-func (tower *TowerRenderer) getLayersSet() *layersSet {
-	n := 0
-	bounds := image.Rect(0, 0, 0, 0)
-	for i := 0; i < maxLayers; i++ {
-		if tower.activeLayers[i] {
-			layer := tower.layers[i]
-			bounds = bounds.Union(layer.Bounds())
-			n++
+func preparedLayer(l *layer) *layer {
+	log.Debug("Preparing layer")
+	res := &layer{
+		alpha:  0xffff,
+		origin: l.origin,
+		rolling: rolling{
+			mode:      l.rolling.mode,
+			entry:     l.rolling.entry,
+			separator: l.rolling.separator,
+		},
+	}
+
+	// create a new image applying the alpha channel of the layer
+	bounds := l.image.Bounds()
+	img := image.NewRGBA(bounds)
+	for x := bounds.Min.X; x < bounds.Max.X; x++ {
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			r, g, b, a := l.image.At(x, y).RGBA()
+			img.Set(
+				x, y,
+				color.RGBA64{
+					uint16(r), uint16(g), uint16(b),
+					uint16(a * uint32(l.alpha) / 0xFFFF),
+				})
 		}
 	}
-	res := layersSet{
-		bounds: bounds,
-		layers: make([]*image.RGBA, n),
-	}
-	j := 0
-	for i := 0; i < maxLayers; i++ {
-		if tower.activeLayers[i] {
-			layer := tower.layers[i]
-			bounds := layer.Bounds()
-			res.layers[j] = image.NewRGBA(res.bounds)
-			for x := bounds.Min.X; x < bounds.Max.X; x++ {
-				for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-					res.layers[j].Set(x, y, layer.At(x, y))
+
+	if l.rolling.mode == sdk.RollingStop {
+		res.image = img
+	} else {
+		log.Debug("Extending image for rolling")
+		wEntry := l.rolling.entry
+		wSep := l.rolling.separator
+		wBody := l.image.Bounds().Max.X - wEntry - wSep
+		// find n such that : wBody + n * (wBody + wSep) >= displayWidth
+		// n >= (displayWidth - wBody) / (wBody + wSep)
+		// n = (displayWidth - wBody + wBody + wSep - 1) div (wBody + wSep)
+		// n = (displayWidth + wSep - 1) div (wBody + wSep)
+		nBody := (displayWidth + wSep - 1) / (wBody + wSep)
+		wTot := 2*(displayWidth-1) + wEntry + (nBody+1)*(wBody+wSep)
+		extendedImg := image.NewRGBA(image.Rect(0, 0, wTot, displayHeight))
+		for y := 0; y < displayHeight; y++ {
+			// Leave room for an emtpy prolog and copy entry
+			for x := 0; x < wEntry; x++ {
+				extendedImg.Set(x+displayWidth-1, y, img.At(x, y))
+			}
+			// Copy extended body and separator
+			for nb := 0; nb < nBody+1; nb++ {
+				for x := 0; x < wBody+wSep; x++ {
+					extendedImg.Set(
+						x+displayWidth-1+wEntry+nb*(wBody+wSep),
+						y,
+						img.At(x+wEntry, y))
 				}
 			}
-			j++
+			// Copy the start of the body at the end for a seamless rolling
+			for x := 0; x < displayWidth-1; x++ {
+				extendedImg.Set(
+					x+displayWidth-1+wEntry+(nBody+1)*(wBody+wSep),
+					y,
+					extendedImg.At(x+displayWidth-1+wEntry, y))
+			}
+		}
+		res.origin = image.Point{0, 0}
+		res.image = extendedImg
+	}
+	return res
+}
+
+func (tower *TowerRenderer) getLayersSet() layersSet {
+	log.Debug("making layer set")
+	res := make([]*layer, 0, maxLayers)
+	for i := 0; i < maxLayers; i++ {
+		if tower.activeLayers[i] {
+			log.Debug("Building layer")
+			l := tower.layers[i]
+			l.id = i
+			res = append(res, preparedLayer(l))
 		}
 	}
-	return &res
+	return res
 }
 
 // Serve starts a grpc server and handles the requests
