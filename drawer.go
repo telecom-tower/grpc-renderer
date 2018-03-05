@@ -29,22 +29,6 @@ import (
 	pb "github.com/telecom-tower/towerapi/v1"
 )
 
-func (tower *TowerRenderer) fill(fill *pb.Fill) error {
-	log.Debugf("fill")
-	tower.activeLayers[fill.Layer] = true
-	layer := tower.layers[fill.Layer]
-	layer.dirty = true
-	canvas := layer.image
-	c := pbColorToColor(fill.Color)
-	bounds := canvas.Bounds()
-	for x := bounds.Min.X; x < bounds.Max.X; x++ {
-		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-			paint(canvas, x, y, c, int(fill.PaintMode))
-		}
-	}
-	return nil
-}
-
 func (tower *TowerRenderer) clear(clear *pb.Clear) error {
 	log.Debugf("clear")
 	for _, l := range clear.Layer {
@@ -220,8 +204,6 @@ func (tower *TowerRenderer) Draw(stream pb.TowerDisplay_DrawServer) error { // n
 
 		if status == nil {
 			switch t := in.Type.(type) {
-			case *pb.DrawRequest_Fill:
-				status = tower.fill(t.Fill)
 			case *pb.DrawRequest_Clear:
 				status = tower.clear(t.Clear)
 			case *pb.DrawRequest_SetPixels:
