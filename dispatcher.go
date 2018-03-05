@@ -3,9 +3,8 @@ package renderer
 import (
 	"image"
 
-	"github.com/telecom-tower/sdk"
-
 	log "github.com/sirupsen/logrus"
+	"github.com/telecom-tower/sdk"
 )
 
 func (tower *TowerRenderer) renderLed(ls layersSet) error {
@@ -38,18 +37,22 @@ func (tower *TowerRenderer) renderLed(ls layersSet) error {
 	return tower.ws.Render()
 }
 
-func (tower *TowerRenderer) loop() chan layersSet {
+// This function is rather complex. I should perhaps refactor it
+func (tower *TowerRenderer) loop() chan layersSet { // nolint: gocyclo
 	log.Debug("Starting tower loop")
 	c := make(chan layersSet)
 
-	rollingLayers := make(layersSet, 0, maxLayers)
-	rollingPos := make([]int, maxLayers)
+	rollingLayers := make([]rollingLayer, maxLayers)
+	for i := 0; i < maxLayers; i++ {
+		rollingLayers[i].queue = make(layersSet, 0)
+	}
+	hasRollingLayers := false
 
 	go func() {
 		var currentSet layersSet
 		for {
 			var newSet bool
-			if len(rollingLayers) > 0 {
+			if hasRollingLayers {
 				select {
 				case currentSet = <-c:
 					newSet = true
@@ -62,31 +65,48 @@ func (tower *TowerRenderer) loop() chan layersSet {
 			}
 
 			if newSet {
+				hasRollingLayers = false
 				log.Debug("Received new set")
-				rollingLayers = rollingLayers[:0]
 				for _, l := range currentSet {
-					if l.rolling.mode != sdk.RollingStop {
-						log.Debug("New rolling layer")
-						if l.rolling.mode == sdk.RollingStart {
-							rollingPos[l.id] = 0
-						}
-						rollingLayers = append(rollingLayers, l)
+					switch l.rolling.mode {
+					case sdk.RollingStop:
+						rollingLayers[l.id].reset()
+					case sdk.RollingStart:
+						rollingLayers[l.id].reset()
+						rollingLayers[l.id].enqueue(l)
+						rollingLayers[l.id].setPos(0)
+						hasRollingLayers = true
+					case sdk.RollingContinue:
+						hasRollingLayers = true
+					case sdk.RollingNext:
+						rollingLayers[l.id].enqueue(l)
+						l.rolling.mode = sdk.RollingContinue
+						hasRollingLayers = true
 					}
 				}
 			}
 
-			for _, l := range rollingLayers {
-				pos := rollingPos[l.id]
-				if pos+displayWidth < l.image.Bounds().Max.X {
-					pos++
-				} else {
-					pos = displayWidth - 1 + l.rolling.entry
+			if hasRollingLayers {
+				for _, l := range currentSet {
+					switch l.rolling.mode {
+					case sdk.RollingStart:
+						l.rolling.mode = sdk.RollingContinue
+					case sdk.RollingContinue:
+						rollingLayers[l.id].advance()
+					}
 				}
-				l.origin.X = pos
-				rollingPos[l.id] = pos
 			}
 
-			_ = tower.renderLed(currentSet)
+			toDisplay := make(layersSet, 0)
+			for _, l := range currentSet {
+				if l.rolling.mode == sdk.RollingContinue {
+					toDisplay = append(toDisplay, rollingLayers[l.id].queue[0])
+				} else {
+					toDisplay = append(toDisplay, l)
+				}
+			}
+
+			_ = tower.renderLed(toDisplay)
 		}
 	}()
 	return c

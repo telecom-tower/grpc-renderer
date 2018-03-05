@@ -52,6 +52,7 @@ type rolling struct {
 	entry     int
 	separator int
 	last      int
+	wrap      *image.RGBA
 }
 
 type layer struct {
@@ -138,11 +139,13 @@ func paint(img *image.RGBA, x int, y int, c color.Color, mode int) {
 	}
 }
 
-func preparedLayer(l *layer) *layer {
+// This function is rather complex. I should perhaps refactor it
+func preparedLayer(l *layer) *layer { // nolint: gocyclo
 	log.Debug("Preparing layer")
 	res := &layer{
 		alpha:  0xffff,
 		origin: l.origin,
+		id:     l.id,
 		rolling: rolling{
 			mode:      l.rolling.mode,
 			entry:     l.rolling.entry,
@@ -179,8 +182,17 @@ func preparedLayer(l *layer) *layer {
 		nBody := (displayWidth + wSep - 1) / (wBody + wSep)
 		wTot := 2*(displayWidth-1) + wEntry + (nBody+1)*(wBody+wSep)
 		extendedImg := image.NewRGBA(image.Rect(0, 0, wTot, displayHeight))
+
+		decisionPoint := wEntry + (nBody+1)*(wBody+wSep) - 1
+		res.rolling.last = decisionPoint
 		for y := 0; y < displayHeight; y++ {
-			// Leave room for an emtpy prolog and copy entry
+			// copy prolog if needed
+			if l.rolling.mode == sdk.RollingNext && l.rolling.wrap != nil {
+				for x := 0; x < displayWidth-1; x++ {
+					extendedImg.Set(x, y, l.rolling.wrap.At(x, y))
+				}
+			}
+			// copy entry
 			for x := 0; x < wEntry; x++ {
 				extendedImg.Set(x+displayWidth-1, y, img.At(x, y))
 			}
@@ -200,6 +212,17 @@ func preparedLayer(l *layer) *layer {
 					y,
 					extendedImg.At(x+displayWidth-1+wEntry, y))
 			}
+		}
+		// compute the wrappring image. No need to do this if mode is CONTINUE
+		if l.rolling.mode == sdk.RollingStart || l.rolling.mode == sdk.RollingNext {
+			wrap := image.NewRGBA(image.Rect(0, 0, displayWidth-1, displayHeight))
+			for y := 0; y < displayHeight; y++ {
+				for x := 0; x < displayWidth-1; x++ {
+					wrap.Set(x, y, extendedImg.At(x+decisionPoint+1, y))
+				}
+			}
+			// save the wrap in the original layer (not in res)
+			l.rolling.wrap = wrap
 		}
 		res.origin = image.Point{0, 0}
 		res.image = extendedImg
