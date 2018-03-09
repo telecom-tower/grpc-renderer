@@ -44,7 +44,8 @@ type WsEngine interface {
 	Render() error
 	Wait() error
 	Fini()
-	Leds(channel int) []uint32
+	SetLedsSync(channel int, leds []uint32) error
+	// Leds(channel int) []uint32
 }
 
 type rolling struct {

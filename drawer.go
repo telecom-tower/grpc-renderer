@@ -26,15 +26,33 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"github.com/telecom-tower/grpc-renderer/font"
+	"github.com/telecom-tower/sdk"
 	pb "github.com/telecom-tower/towerapi/v1"
 )
+
+func resetLayer(l *layer) {
+	l.image = image.NewRGBA(image.Rect(0, 0, 0, 0))
+	l.origin = image.Point{0, 0}
+	l.dirty = true
+	l.alpha = 0xffff
+	l.rolling.mode = sdk.RollingStop
+	l.rolling.entry = 0
+	l.rolling.separator = 0
+}
+
+func (tower *TowerRenderer) init(clear *pb.Init) error {
+	log.Debugf("init")
+	for l := 0; l < maxLayers; l++ {
+		resetLayer(tower.layers[l])
+		tower.activeLayers[l] = false
+	}
+	return nil
+}
 
 func (tower *TowerRenderer) clear(clear *pb.Clear) error {
 	log.Debugf("clear")
 	for _, l := range clear.Layer {
-		layer := tower.layers[l]
-		layer.image = image.NewRGBA(image.Rect(0, 0, 0, 0))
-		layer.dirty = true
+		resetLayer(tower.layers[l])
 		tower.activeLayers[l] = false
 	}
 	return nil
@@ -204,6 +222,8 @@ func (tower *TowerRenderer) Draw(stream pb.TowerDisplay_DrawServer) error { // n
 
 		if status == nil {
 			switch t := in.Type.(type) {
+			case *pb.DrawRequest_Init:
+				status = tower.init(t.Init)
 			case *pb.DrawRequest_Clear:
 				status = tower.clear(t.Clear)
 			case *pb.DrawRequest_SetPixels:

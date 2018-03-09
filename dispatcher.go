@@ -3,6 +3,7 @@ package renderer
 import (
 	"image"
 
+	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"github.com/telecom-tower/sdk"
 )
@@ -19,7 +20,7 @@ func (tower *TowerRenderer) renderLed(ls layersSet) error {
 			}
 		}
 	}
-	leds := tower.ws.Leds(0)
+	leds := make([]uint32, displayHeight*displayWidth)
 	for x := 0; x < displayWidth; x++ {
 		for y := 0; y < displayHeight; y++ {
 			var index int
@@ -32,6 +33,9 @@ func (tower *TowerRenderer) renderLed(ls layersSet) error {
 			c := ((r>>8)&0xff)<<16 + ((g>>8)&0xff)<<8 + ((b>>8)&0xff)<<0
 			leds[index] = c
 		}
+	}
+	if err := tower.ws.SetLedsSync(0, leds); err != nil {
+		return errors.WithMessage(err, "Error rendering frame")
 	}
 	// log.Debugf("Rendering time: %f µs", time.Since(t0).Seconds()*1e6)
 	return tower.ws.Render()
