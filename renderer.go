@@ -156,6 +156,18 @@ func preparedLayer(l *layer) *layer { // nolint: gocyclo
 
 	// create a new image applying the alpha channel of the layer
 	bounds := l.image.Bounds()
+	if l.rolling.mode != sdk.RollingStop {
+		dx := l.rolling.entry + l.rolling.separator
+		if bounds.Max.X-dx <= 0 {
+			// make sure that wBody > 0 for rolling frames
+			log.Debugf("Fixing width : %v -> %v", bounds.Max.X-dx, displayWidth+dx)
+			bounds.Max.X = displayWidth + dx
+		}
+		if bounds.Max.Y < displayHeight {
+			log.Debugf("Fixing height : %v -> %v", bounds.Max.Y, displayHeight)
+			bounds.Max.Y = displayHeight
+		}
+	}
 	img := image.NewRGBA(bounds)
 	for x := bounds.Min.X; x < bounds.Max.X; x++ {
 		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
@@ -175,11 +187,14 @@ func preparedLayer(l *layer) *layer { // nolint: gocyclo
 		log.Debug("Extending image for rolling")
 		wEntry := l.rolling.entry
 		wSep := l.rolling.separator
-		wBody := l.image.Bounds().Max.X - wEntry - wSep
+		wBody := img.Bounds().Max.X - wEntry - wSep
 		// find n such that : wBody + n * (wBody + wSep) >= displayWidth
 		// n >= (displayWidth - wBody) / (wBody + wSep)
 		// n = (displayWidth - wBody + wBody + wSep - 1) div (wBody + wSep)
 		// n = (displayWidth + wSep - 1) div (wBody + wSep)
+
+		// This division should never produce a division by zero. At the beginning of
+		// this function, we ensure that (if we have a rolling frame) wBody > 0
 		nBody := (displayWidth + wSep - 1) / (wBody + wSep)
 		wTot := 2*(displayWidth-1) + wEntry + (nBody+1)*(wBody+wSep)
 		extendedImg := image.NewRGBA(image.Rect(0, 0, wTot, displayHeight))
