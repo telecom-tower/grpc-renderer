@@ -119,13 +119,14 @@ func (tower *TowerRenderer) drawBitmap(bitmap *pb.DrawBitmap) error {
 	return nil
 }
 
-func (tower *TowerRenderer) writeText(wt *pb.WriteText) error {
+func (tower *TowerRenderer) writeText(wt *pb.WriteText) error { // nolint: gocyclo
 	log.Debug("write text")
 	tower.activeLayers[wt.Layer] = true
 	layer := tower.layers[wt.Layer]
 	layer.dirty = true
 	canvas := layer.image
 	var fnt font.Font
+	var fntWidth int
 	var rect image.Rectangle
 
 	msg, err := font.ExpandAlias(wt.Text)
@@ -135,25 +136,35 @@ func (tower *TowerRenderer) writeText(wt *pb.WriteText) error {
 
 	if wt.Font == "8x8" {
 		fnt = font.Font8x8
-		rect = image.Rect(int(wt.X), 0, int(wt.X)+8*len(msg), 8)
+		fntWidth = 8
 	} else if wt.Font == "6x8" {
 		fnt = font.Font6x8
-		rect = image.Rect(int(wt.X), 0, int(wt.X)+6*len(msg), 8)
+		fntWidth = 6
 	} else {
 		return errors.New("Unknown font")
 	}
 
+	textLen := 0
+	for _, r := range msg {
+		if _, ok := fnt.Bitmap[r]; ok {
+			textLen++
+		}
+	}
+
+	rect = image.Rect(int(wt.X), 0, int(wt.X)+fntWidth*textLen, 8)
 	canvas = resizeImage(canvas, rect)
 	c := pbColorToColor(wt.Color)
 	x := int(wt.X)
 	for _, r := range msg {
-		for _, glyph := range fnt.Bitmap[r] {
-			for y := 0; y < 8; y++ {
-				if uint(glyph)&(1<<uint(y)) != 0 {
-					paint(canvas, x, y, c, int(wt.PaintMode))
+		if bmap, ok := fnt.Bitmap[r]; ok {
+			for _, glyph := range bmap {
+				for y := 0; y < 8; y++ {
+					if uint(glyph)&(1<<uint(y)) != 0 {
+						paint(canvas, x, y, c, int(wt.PaintMode))
+					}
 				}
+				x++
 			}
-			x++
 		}
 	}
 	tower.layers[wt.Layer].image = canvas
